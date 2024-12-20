@@ -1297,7 +1297,7 @@ function* bindEvents(ctx, docId, callback, baseUrl, opt_userAction, opt_userData
     }
   } else {
     oCallbackUrl = parseUrl(ctx, callback);
-    bChangeBase = c_oAscChangeBase.All;
+    bChangeBase = c_oAscChangeBase.No;
     if (null !== oCallbackUrl) {
       let filterStatus = yield* utils.checkHostFilter(ctx, oCallbackUrl.host);
       if (filterStatus > 0) {
@@ -1561,8 +1561,6 @@ async function encryptPasswordParams(ctx, data) {
     dataWithPassword = data.message;
   } else if (data.type === 'auth' && data.openCmd) {
     dataWithPassword = data.openCmd;
-  } else if (data.c === 'savefromorigin') {
-    dataWithPassword = data;
   }
   if (dataWithPassword && dataWithPassword.password) {
     if (dataWithPassword.password.length > constants.PASSWORD_MAX_LENGTH) {
@@ -1634,7 +1632,8 @@ exports.install = function(server, callbackFunction) {
         return;
       }
       if (getIsShutdown()) {
-        sendFileError(ctx, conn, 'Server shutdow');
+        sendDataDisconnectReason(ctx, conn, constants.SHUTDOWN_CODE, constants.SHUTDOWN_REASON);
+        conn.disconnect(true);
         return;
       }
       conn.baseUrl = utils.getBaseUrlByConnection(ctx, conn);
