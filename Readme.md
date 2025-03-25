@@ -13,7 +13,7 @@ If you want a production ready release, contact Ascensio System https://www.only
 
 [![License](https://img.shields.io/badge/License-GNU%20AGPL%20V3-green.svg?style=flat)](https://www.gnu.org/licenses/agpl-3.0.en.html)
 
-The backend server software layer which is the part of [ONLYOFFICE Document Server][2] and [ONLYOFFICE Desktop Editors][4] and is the base for all other components.
+The backend server software layer which is the part of [ONLYOFFICE Document Server][2] and is the base for all other components.
 
 ## Document service set up
 
@@ -108,7 +108,6 @@ If you have any problems with or questions about [ONLYOFFICE Document Server][2]
   [1]: https://forum.onlyoffice.com
   [2]: https://github.com/ONLYOFFICE/DocumentServer
   [3]: https://stackoverflow.com/questions/tagged/onlyoffice
-  [4]: https://github.com/ONLYOFFICE/DesktopEditors
 
 ## License
 
