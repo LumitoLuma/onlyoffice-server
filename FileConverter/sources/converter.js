@@ -43,11 +43,11 @@ const lcid = require('lcid');
 const ms = require('ms');
 
 var commonDefines = require('./../../Common/sources/commondefines');
-var storage = require('./../../Common/sources/storage-base');
+var storage = require('./../../Common/sources/storage/storage-base');
 var utils = require('./../../Common/sources/utils');
 var constants = require('./../../Common/sources/constants');
 var baseConnector = require('../../DocService/sources/databaseConnectors/baseConnector');
-const wopiClient = require('./../../DocService/sources/wopiClient');
+const wopiUtils = require('./../../DocService/sources/wopiUtils');
 const taskResult = require('./../../DocService/sources/taskresult');
 var statsDClient = require('./../../Common/sources/statsdclient');
 var queueService = require('./../../Common/sources/taskqueueRabbitMQ');
@@ -64,7 +64,7 @@ const cfgPresentationThemesDir = config.get('FileConverter.converter.presentatio
 const cfgX2tPath = config.get('FileConverter.converter.x2tPath');
 const cfgDocbuilderPath = config.get('FileConverter.converter.docbuilderPath');
 const cfgArgs = config.get('FileConverter.converter.args');
-const cfgSpawnOptions = config.get('FileConverter.converter.spawnOptions');
+const cfgSpawnOptions = config.util.cloneDeep(config.get('FileConverter.converter.spawnOptions'));
 const cfgErrorFiles = config.get('FileConverter.converter.errorfiles');
 const cfgInputLimits = config.get('FileConverter.converter.inputLimits');
 const cfgStreamWriterBufferSize = config.get('FileConverter.converter.streamWriterBufferSize');
@@ -74,7 +74,7 @@ const cfgForgottenFiles = config.get('services.CoAuthoring.server.forgottenfiles
 const cfgForgottenFilesName = config.get('services.CoAuthoring.server.forgottenfilesname');
 const cfgNewFileTemplate = config.get('services.CoAuthoring.server.newFileTemplate');
 const cfgEditor = config.get('services.CoAuthoring.editor');
-const cfgRequesFilteringAgent = config.get('services.CoAuthoring.request-filtering-agent');
+const cfgRequesFilteringAgent = config.util.cloneDeep(config.get('services.CoAuthoring.request-filtering-agent'));
 const cfgExternalRequestDirectIfIn = config.get('externalRequest.directIfIn');
 const cfgExternalRequestAction = config.get('externalRequest.action');
 
@@ -133,6 +133,7 @@ function TaskQueueDataConvert(ctx, task) {
   this.savePassword = cmd.getSavePassword();
   this.noBase64 = cmd.getNoBase64();
   this.convertToOrigin = cmd.getConvertToOrigin();
+  this.oformAsPdf = cmd.getOformAsPdf();
   this.timestamp = new Date();
 }
 TaskQueueDataConvert.prototype = {
@@ -169,7 +170,7 @@ TaskQueueDataConvert.prototype = {
     xml += this.serializeXmlProp('m_bIsNoBase64', this.noBase64);
     xml += this.serializeXmlProp('m_sConvertToOrigin', this.convertToOrigin);
     xml += this.serializeLimit(ctx);
-    xml += this.serializeOptions(ctx, false);
+    xml += this.serializeOptions(ctx, false, this.oformAsPdf);
     xml += '</TaskQueueDataConvert>';
     fs.writeFileSync(fsPath, xml, {encoding: 'utf8'});
   },
@@ -192,7 +193,7 @@ TaskQueueDataConvert.prototype = {
       return xml;
     });
   },
-  serializeOptions: function (ctx, isInJwtToken) {
+  serializeOptions: function (ctx, isInJwtToken, oformAsPdf) {
     const tenRequesFilteringAgent = ctx.getCfg('services.CoAuthoring.request-filtering-agent', cfgRequesFilteringAgent);
     const tenExternalRequestDirectIfIn = ctx.getCfg('externalRequest.directIfIn', cfgExternalRequestDirectIfIn);
     const tenExternalRequestAction = ctx.getCfg('externalRequest.action', cfgExternalRequestAction);
@@ -230,6 +231,9 @@ TaskQueueDataConvert.prototype = {
     }
     if (proxyHeadersStr.length > 0) {
       xml += this.serializeXmlProp('proxyHeader', proxyHeadersStr.join(';'));
+    }
+    if (undefined !== oformAsPdf) {
+      xml += this.serializeXmlProp('oformAsPdf', oformAsPdf);
     }
     xml += '</options>';
     return xml;
@@ -345,15 +349,13 @@ function* isUselessConvertion(ctx, task, cmd) {
   return constants.NO_ERROR;
 }
 async function changeFormatToExtendedPdf(ctx, dataConvert, cmd) {
-  let forceSave = cmd.getForceSave();
-  let isSendForm = forceSave && forceSave.getType() === commonDefines.c_oAscForceSaveTypes.Form;
   let originFormat = cmd.getOriginFormat();
   let isOriginFormatWithForms = constants.AVS_OFFICESTUDIO_FILE_CROSSPLATFORM_PDF === originFormat ||
     constants.AVS_OFFICESTUDIO_FILE_DOCUMENT_OFORM === originFormat ||
     constants.AVS_OFFICESTUDIO_FILE_DOCUMENT_DOCXF === originFormat;
   let isFormatToPdf = constants.AVS_OFFICESTUDIO_FILE_CROSSPLATFORM_PDF === dataConvert.formatTo ||
     constants.AVS_OFFICESTUDIO_FILE_CROSSPLATFORM_PDFA === dataConvert.formatTo;
-  if (isFormatToPdf && isOriginFormatWithForms && !isSendForm) {
+  if (isFormatToPdf && isOriginFormatWithForms) {
     let format = await formatChecker.getDocumentFormatByFile(dataConvert.fileFrom);
     if (constants.AVS_OFFICESTUDIO_FILE_CANVAS_WORD === format) {
       ctx.logger.debug('change format to extended pdf');
@@ -1074,7 +1076,7 @@ function* ExecuteTask(ctx, task) {
         isInJwtToken = true;
         let fileInfo = wopiParams.commonInfo?.fileInfo;
         fileSize = fileInfo?.Size;
-        ({url, headers} = yield wopiClient.getWopiFileUrl(ctx, fileInfo, wopiParams.userAuth));
+        ({url, headers} = yield wopiUtils.getWopiFileUrl(ctx, fileInfo, wopiParams.userAuth));
       }
       if (undefined === fileSize || fileSize > 0) {
         error = yield* downloadFile(ctx, url, dataConvert.fileFrom, withAuthorization, isInJwtToken, headers);
