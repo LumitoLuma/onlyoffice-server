@@ -1,0 +1,184 @@
+diff --git a/Common/sources/runtimeConfigManager.js b/Common/sources/runtimeConfigManager.js
+index 0001e3b1c..1d9a82820 100644
+--- a/Common/sources/runtimeConfigManager.js
++++ b/Common/sources/runtimeConfigManager.js
+@@ -46,7 +46,6 @@ const configFileName = path.basename(configFilePath);
+ 
+ // Initialize cache with TTL and check for expired keys every minute
+ const nodeCache = new NodeCache(cfgRuntimeConfig.cache);
+-let isInitConfigWatcher = false;
+ 
+ /**
+  * Get runtime configuration for the current context
+@@ -54,9 +53,8 @@ let isInitConfigWatcher = false;
+  * @returns {Object} Runtime configuration object
+  */
+ async function getConfigFromFile(ctx) {
+-  if (!isInitConfigWatcher) {
+-    isInitConfigWatcher = true;
+-    initConfigWatcher(ctx);
++  if (!configFilePath) {
++    return null;
+   }
+   try {
+     const configData = await fs.readFile(configFilePath, 'utf8');
+@@ -89,6 +87,9 @@ async function getConfig(ctx) {
+  * @returns {Object} Saved configuration object
+  */
+ async function saveConfig(ctx, config) {
++  if (!configFilePath) {
++    throw new Error('runtimeConfig.filePath is not specified');
++  }
+   await fs.mkdir(path.dirname(configFilePath), { recursive: true });
+   let newConfig = await getConfig(ctx);
+   newConfig = utils.deepMergeObjects(newConfig || {}, config);
+@@ -116,20 +117,24 @@ function handleConfigFileChange(eventType, filename) {
+ /**
+  * Initialize the configuration directory watcher
+  */
+-function initConfigWatcher(ctx) {
++function initRuntimeConfigWatcher(ctx) {
++  if (!configFilePath) {
++    ctx.logger.info(`runtimeConfig.filePath is not specified`);
++    return;
++  }
+   try {
+     const configDir = path.dirname(configFilePath);
+     const watcher = fsWatch.watch(configDir, handleConfigFileChange);
+     watcher.on('error', (err) => {
+-      ctx.logger.error(`initConfigWatcher error: ${err.message}`);
++      ctx.logger.warn(`initRuntimeConfigWatcher error: ${err.message}`);
+     });
+-    ctx.logger.info(`initConfigWatcherWatching for changes in: ${configDir}`);
++    ctx.logger.info(`watching for runtime config changes in: ${configDir}`);
+   } catch (watchErr) {
+-    ctx.logger.error(`initConfigWatcher error: ${watchErr.message}`);
++    ctx.logger.warn(`initRuntimeConfigWatcher error: ${watchErr.message}`);
+   }
+ }
+-
+ module.exports = {
++  initRuntimeConfigWatcher,
+   getConfig,
+   saveConfig
+ };
+diff --git a/DocService/sources/DocsCoServer.js b/DocService/sources/DocsCoServer.js
+index 0987dc20a..03f601deb 100644
+--- a/DocService/sources/DocsCoServer.js
++++ b/DocService/sources/DocsCoServer.js
+@@ -101,6 +101,7 @@ const pubsubService = require('./pubsubRabbitMQ');
+ const wopiClient = require('./wopiClient');
+ const queueService = require('./../../Common/sources/taskqueueRabbitMQ');
+ const operationContext = require('./../../Common/sources/operationContext');
++const runtimeConfigManager = require('./../../Common/sources/runtimeConfigManager');
+ const tenantManager = require('./../../Common/sources/tenantManager');
+ const { notificationTypes, ...notificationService } = require('../../Common/sources/notificationService');
+ const aiProxyHandler = require('./ai/aiProxyHandler');
+@@ -1983,7 +1984,9 @@ exports.install = function(server, callbackFunction) {
+           if (needSaveChanges && !conn.encrypted) {
+             // Send changes to save server
+             let user_lcid = utilsDocService.localeToLCID(conn.lang);
+-            yield createSaveTimer(ctx, docId, tmpUser.idOriginal, userIndex, user_lcid, undefined, getIsShutdown());
++            //noDelay=true if the client intentionally closes connection or server shuts down
++            const noDelay = !reason || getIsShutdown();
++            yield createSaveTimer(ctx, docId, tmpUser.idOriginal, userIndex, user_lcid, undefined, noDelay);
+           } else if (needSendStatus) {
+             yield* cleanDocumentOnExitNoChanges(ctx, docId, tmpUser.idOriginal, userIndex);
+           } else {
+@@ -3999,7 +4002,9 @@ exports.install = function(server, callbackFunction) {
+       );
+     });
+   });
+-  
++
++  //Initialize watch here to avoid circular import with operationContext
++  runtimeConfigManager.initRuntimeConfigWatcher(operationContext.global);
+   void aiProxyHandler.getPluginSettings(operationContext.global);
+ };
+ exports.setLicenseInfo = async function(globalCtx, data, original) {
+diff --git a/DocService/sources/canvasservice.js b/DocService/sources/canvasservice.js
+index a807e819a..378e48f5a 100644
+--- a/DocService/sources/canvasservice.js
++++ b/DocService/sources/canvasservice.js
+@@ -538,15 +538,7 @@ function* commandOpen(ctx, conn, cmd, outputData, opt_upsertRes, opt_bIsRestore)
+         dataQueue.setCtx(ctx);
+         dataQueue.setCmd(cmd);
+         dataQueue.setToFile('Editor.bin');
+-        var priority = constants.QUEUE_PRIORITY_HIGH;
+-        var formatIn = formatChecker.getFormatFromString(cmd.getFormat());
+-        //decrease pdf, djvu, xps convert priority becase long open time
+-        if (constants.AVS_OFFICESTUDIO_FILE_CROSSPLATFORM_PDF === formatIn ||
+-          constants.AVS_OFFICESTUDIO_FILE_CROSSPLATFORM_DJVU === formatIn ||
+-          constants.AVS_OFFICESTUDIO_FILE_CROSSPLATFORM_XPS === formatIn) {
+-          priority = constants.QUEUE_PRIORITY_LOW;
+-        }
+-        yield* docsCoServer.addTask(dataQueue, priority);
++        yield* docsCoServer.addTask(dataQueue, constants.QUEUE_PRIORITY_HIGH);
+       } else {
+         yield* commandOpenFillOutput(ctx, conn, cmd, outputData, opt_bIsRestore);
+       }
+@@ -735,7 +727,7 @@ function* commandImgurls(ctx, conn, cmd, outputData) {
+       var urlSource = urls[i];
+       var urlParsed;
+       var data = undefined;
+-      if (urlSource.startsWith('data:')) {
++      if (urlSource?.startsWith('data:')) {
+         let delimiterIndex = urlSource.indexOf(',');
+         if (-1 != delimiterIndex) {
+           let dataLen = urlSource.length - (delimiterIndex + 1);
+@@ -777,10 +769,10 @@ function* commandImgurls(ctx, conn, cmd, outputData) {
+         }
+       }
+ 
+-      data = yield utilsDocService.fixImageExifRotation(ctx, data);
+-
+       var outputUrl = {url: 'error', path: 'error'};
+       if (data) {
++        data = yield utilsDocService.fixImageExifRotation(ctx, data);
++
+         let format = formatChecker.getImageFormat(ctx, data);
+         let formatStr;
+         let isAllow = false;
+diff --git a/branding/info/js/ai-integration.js b/branding/info/js/ai-integration.js
+index 48cd34869..9dd5e6a35 100644
+--- a/branding/info/js/ai-integration.js
++++ b/branding/info/js/ai-integration.js
+@@ -276,7 +276,7 @@ const AIIntegration = {
+                 const btnResetActions = document.getElementById('ai-btn-reset-actions');
+                 if (btnResetActions) {
+                     const originalText = btnResetActions.textContent;
+-                    btnResetActions.textContent = res ? 'Actions Reset!' : 'Reset Failed!';
++                    btnResetActions.textContent = res ? 'Tasks Reset!' : 'Reset Failed!';
+                     btnResetActions.disabled = true;
+                     setTimeout(() => {
+                         btnResetActions.textContent = originalText;
+@@ -293,7 +293,7 @@ const AIIntegration = {
+                 const btnResetAllSettings = document.getElementById('ai-btn-reset-all-settings');
+                 if (btnResetAllSettings) {
+                     const originalText = btnResetAllSettings.textContent;
+-                    btnResetAllSettings.textContent = res ? 'Settings Reset!' : 'Reset Failed!';
++                    btnResetAllSettings.textContent = res ? 'Defaults Restored!' : 'Restore Failed!';
+                     btnResetAllSettings.disabled = true;
+                     setTimeout(() => {
+                         btnResetAllSettings.textContent = originalText;
+diff --git a/dictionaries/update.py b/dictionaries/update.py
+index 37f51471b..b614d6355 100644
+--- a/dictionaries/update.py
++++ b/dictionaries/update.py
+@@ -76,9 +76,12 @@
+ testDevelopVersion = sdkjsDirectory + "/.git"
+ if not os.path.isdir(testDevelopVersion):
+     print("Not in develop version, skipping x2t cache update")
++    x2tDir = curDirectory + "/../FileConverter/bin"
++    cur_dir = os.getcwd()
++    os.chdir(x2tDir)
+     x2tBin = curDirectory + "/../FileConverter/bin/x2t"
+     if ("windows" == platform.system().lower()):
+-        x2tBin += ".exe"
+-        subprocess.call([x2tBin, "-create-js-cache"], stderr=subprocess.STDOUT, shell=True)
+-    command = x2tBin + " -create-js-cache"
+-    subprocess.call(command, stderr=subprocess.STDOUT, shell=True)
++        subprocess.call(["x2t.exe", "-create-js-cache"], stderr=subprocess.STDOUT, shell=True)
++    else:
++        subprocess.call("x2t -create-js-cache", stderr=subprocess.STDOUT, shell=True)
++    os.chdir(cur_dir)
